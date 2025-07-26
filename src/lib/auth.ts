@@ -10,6 +10,12 @@ export const auth = betterAuth({
     enabled: true,
     requireEmailVerification: false, // 開発用に無効化
   },
+  socialProviders: {
+    google: {
+      clientId: process.env.GOOGLE_CLIENT_ID as string,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET as string,
+    },
+  },
   secret: process.env.BETTER_AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL,
   trustedOrigins: ["http://localhost:3000"],
