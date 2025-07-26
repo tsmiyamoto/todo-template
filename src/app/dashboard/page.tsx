@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { api, type Todo } from '@/lib/api-client'
+import { client, type Todo } from '@/lib/api-client'
 import { signOut, useSession } from '@/lib/auth-client'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
@@ -24,14 +24,20 @@ export default function DashboardPage() {
     }
   }, [session, router])
 
-  // ToDoリストを取得（Hono APIクライアント使用）
+  // ToDoリストを取得（Hono RPC）
   const fetchTodos = async () => {
     try {
-      const data = await api.todos.list()
-      setTodos(data)
+      const res = await client.api.todos.$get()
+      if (res.ok) {
+        const data = await res.json()
+        setTodos(data)
+      } else {
+        console.error('ToDoの取得に失敗しました')
+        setTodos([])
+      }
     } catch (error) {
       console.error('ToDoの取得に失敗しました:', error)
-      setTodos([]) // エラー時は空配列
+      setTodos([])
     }
   }
 
@@ -42,21 +48,28 @@ export default function DashboardPage() {
     }
   }, [session.data])
 
-  // 新しいToDoを追加（Hono APIクライアント使用）
+  // 新しいToDoを追加（Hono RPC + Zod validation）
   const addTodo = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTodoTitle.trim()) return
 
     setLoading(true)
     try {
-      await api.todos.create({
-        title: newTodoTitle,
-        description: newTodoDescription || undefined,
+      const res = await client.api.todos.$post({
+        json: {
+          title: newTodoTitle,
+          description: newTodoDescription || undefined,
+        }
       })
       
-      setNewTodoTitle('')
-      setNewTodoDescription('')
-      fetchTodos() // リスト更新
+      if (res.ok) {
+        setNewTodoTitle('')
+        setNewTodoDescription('')
+        fetchTodos() // リスト更新
+      } else {
+        const errorData = await res.json()
+        console.error('ToDoの追加に失敗しました:', errorData)
+      }
     } catch (error) {
       console.error('ToDoの追加に失敗しました:', error)
     } finally {
@@ -64,21 +77,38 @@ export default function DashboardPage() {
     }
   }
 
-  // ToDoの完了状態を切り替え（Hono APIクライアント使用）
+  // ToDoの完了状態を切り替え（Hono RPC）
   const toggleTodo = async (id: number, completed: boolean) => {
     try {
-      await api.todos.update(id, { completed })
-      fetchTodos() // リスト更新
+      const res = await client.api.todos[':id'].$put({
+        param: { id: id.toString() },
+        json: { completed }
+      })
+      
+      if (res.ok) {
+        fetchTodos() // リスト更新
+      } else {
+        const errorData = await res.json()
+        console.error('ToDoの更新に失敗しました:', errorData)
+      }
     } catch (error) {
       console.error('ToDoの更新に失敗しました:', error)
     }
   }
 
-  // ToDoを削除（Hono APIクライアント使用）
+  // ToDoを削除（Hono RPC）
   const deleteTodo = async (id: number) => {
     try {
-      await api.todos.delete(id)
-      fetchTodos() // リスト更新
+      const res = await client.api.todos[':id'].$delete({
+        param: { id: id.toString() }
+      })
+      
+      if (res.ok) {
+        fetchTodos() // リスト更新
+      } else {
+        const errorData = await res.json()
+        console.error('ToDoの削除に失敗しました:', errorData)
+      }
     } catch (error) {
       console.error('ToDoの削除に失敗しました:', error)
     }
@@ -194,7 +224,7 @@ export default function DashboardPage() {
                           </p>
                         )}
                         <p className="text-xs text-gray-400 mt-2">
-                          {new Date(todo.created_at).toLocaleDateString('ja-JP')}
+                          {new Date(todo.createdAt).toLocaleDateString('ja-JP')}
                         </p>
                       </div>
                       <Button
