@@ -4,47 +4,34 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { api, type Todo } from '@/lib/api-client'
 import { signOut, useSession } from '@/lib/auth-client'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 
-interface Todo {
-  id: number
-  title: string
-  description: string | null
-  completed: boolean
-  userId: string
-  created_at: string
-  updated_at: string
-}
-
 export default function DashboardPage() {
   const session = useSession()
   const router = useRouter()
-  const [todos, setTodos] = useState<Todo[]>([])
+  const [todos, setTodos] = useState<Todo[]>()
   const [newTodoTitle, setNewTodoTitle] = useState('')
   const [newTodoDescription, setNewTodoDescription] = useState('')
   const [loading, setLoading] = useState(false)
 
-  // 認証チェック
+  // 認証チェック（middlewareでも行うが念のため）
   useEffect(() => {
     if (session.error || (!session.isPending && !session.data)) {
       router.push('/auth/login')
     }
   }, [session, router])
 
-  // ToDoリストを取得
+  // ToDoリストを取得（Hono APIクライアント使用）
   const fetchTodos = async () => {
     try {
-      const response = await fetch('/api/todos', {
-        credentials: 'include',
-      })
-      if (response.ok) {
-        const data = await response.json()
-        setTodos(data)
-      }
+      const data = await api.todos.list()
+      setTodos(data)
     } catch (error) {
       console.error('ToDoの取得に失敗しました:', error)
+      setTodos([]) // エラー時は空配列
     }
   }
 
@@ -55,30 +42,21 @@ export default function DashboardPage() {
     }
   }, [session.data])
 
-  // 新しいToDoを追加
+  // 新しいToDoを追加（Hono APIクライアント使用）
   const addTodo = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTodoTitle.trim()) return
 
     setLoading(true)
     try {
-      const response = await fetch('/api/todos', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({
-          title: newTodoTitle,
-          description: newTodoDescription,
-        }),
+      await api.todos.create({
+        title: newTodoTitle,
+        description: newTodoDescription || undefined,
       })
-
-      if (response.ok) {
-        setNewTodoTitle('')
-        setNewTodoDescription('')
-        fetchTodos() // リスト更新
-      }
+      
+      setNewTodoTitle('')
+      setNewTodoDescription('')
+      fetchTodos() // リスト更新
     } catch (error) {
       console.error('ToDoの追加に失敗しました:', error)
     } finally {
@@ -86,37 +64,21 @@ export default function DashboardPage() {
     }
   }
 
-  // ToDoの完了状態を切り替え
+  // ToDoの完了状態を切り替え（Hono APIクライアント使用）
   const toggleTodo = async (id: number, completed: boolean) => {
     try {
-      const response = await fetch(`/api/todos/${id}`, {
-        method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
-        body: JSON.stringify({ completed }),
-      })
-
-      if (response.ok) {
-        fetchTodos() // リスト更新
-      }
+      await api.todos.update(id, { completed })
+      fetchTodos() // リスト更新
     } catch (error) {
       console.error('ToDoの更新に失敗しました:', error)
     }
   }
 
-  // ToDoを削除
+  // ToDoを削除（Hono APIクライアント使用）
   const deleteTodo = async (id: number) => {
     try {
-      const response = await fetch(`/api/todos/${id}`, {
-        method: 'DELETE',
-        credentials: 'include',
-      })
-
-      if (response.ok) {
-        fetchTodos() // リスト更新
-      }
+      await api.todos.delete(id)
+      fetchTodos() // リスト更新
     } catch (error) {
       console.error('ToDoの削除に失敗しました:', error)
     }
@@ -192,10 +154,16 @@ export default function DashboardPage() {
         {/* ToDoリスト */}
         <div className="space-y-4">
           <h2 className="text-xl font-semibold text-gray-900">
-            あなたのタスク ({todos.length})
+            あなたのタスク {todos ? `(${todos.length})` : ''}
           </h2>
           
-          {todos.length === 0 ? (
+          {todos === undefined ? (
+            <Card>
+              <CardContent className="py-8 text-center text-gray-500">
+                読み込み中...
+              </CardContent>
+            </Card>
+          ) : todos.length === 0 ? (
             <Card>
               <CardContent className="py-8 text-center text-gray-500">
                 まだタスクがありません。上のフォームから新しいタスクを追加してみましょう！
