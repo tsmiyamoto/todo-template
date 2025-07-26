@@ -1,11 +1,34 @@
 import { auth } from "@/lib/auth";
 import { categories, db, todos } from "@/lib/db";
+import { zValidator } from "@hono/zod-validator";
 import { and, eq } from "drizzle-orm";
 import { Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { handle } from "hono/vercel";
+import { z } from "zod";
 
 export const runtime = "nodejs";
+
+// Zod スキーマ定義
+const todoCreateSchema = z.object({
+  title: z.string().min(1, "タイトルは必須です"),
+  description: z.string().optional(),
+});
+
+const todoUpdateSchema = z.object({
+  title: z.string().min(1, "タイトルは必須です").optional(),
+  description: z.string().optional(),
+  completed: z.boolean().optional(),
+});
+
+const todoParamSchema = z.object({
+  id: z.string().pipe(z.coerce.number()),
+});
+
+const categoryCreateSchema = z.object({
+  name: z.string().min(1, "カテゴリ名は必須です"),
+  color: z.string().default("#3b82f6"),
+});
 
 // Hono型定義
 type Env = {
@@ -33,7 +56,7 @@ app.use(
 app.mount("/auth", auth.handler);
 
 // 認証ミドルウェア
-const requireAuth = async (c: Context, next: () => Promise<void>) => {
+const requireAuth = async (c: Context<Env>, next: () => Promise<void>) => {
   try {
     const session = await auth.api.getSession({
       headers: c.req.raw.headers,
@@ -50,152 +73,157 @@ const requireAuth = async (c: Context, next: () => Promise<void>) => {
   }
 };
 
-// Hello endpoint (テスト用)
-app.get("/hello", (c) => {
-  return c.json({
-    message: "Hello from Hono + BetterAuth + Next.js!",
-  });
-});
+// Hono RPC用のチェーン形式ルーティング定義
+const routes = app
+  // Hello endpoint (テスト用)
+  .get("/hello", (c) => {
+    return c.json({
+      message: "Hello from Hono + BetterAuth + Zod!",
+    });
+  })
 
-// ToDo API Routes
-app.get("/todos", requireAuth, async (c) => {
-  try {
-    const user = c.get("user");
-    const userTodos = await db
-      .select()
-      .from(todos)
-      .where(eq(todos.userId, user.id))
-      .orderBy(todos.createdAt);
+  // ToDo API Routes（Zod validation付き）
+  .get("/todos", requireAuth, async (c) => {
+    try {
+      const user = c.get("user");
+      const userTodos = await db
+        .select()
+        .from(todos)
+        .where(eq(todos.userId, user.id))
+        .orderBy(todos.createdAt);
 
-    return c.json(userTodos);
-  } catch (error) {
-    return c.json({ error: "Failed to fetch todos" }, 500);
-  }
-});
-
-app.post("/todos", requireAuth, async (c) => {
-  try {
-    const user = c.get("user");
-    const body = await c.req.json();
-
-    if (!body.title || body.title.trim() === "") {
-      return c.json({ error: "Title is required" }, 400);
+      return c.json(userTodos);
+    } catch (error) {
+      return c.json({ error: "Failed to fetch todos" }, 500);
     }
+  })
 
-    const newTodo = await db
-      .insert(todos)
-      .values({
-        title: body.title.trim(),
-        description: body.description || null,
-        userId: user.id,
-      })
-      .returning();
+  .post(
+    "/todos",
+    requireAuth,
+    zValidator("json", todoCreateSchema),
+    async (c) => {
+      try {
+        const user = c.get("user");
+        const { title, description } = c.req.valid("json");
 
-    return c.json(newTodo[0]);
-  } catch (error) {
-    return c.json({ error: "Failed to create todo" }, 500);
-  }
-});
+        const newTodo = await db
+          .insert(todos)
+          .values({
+            title,
+            description: description || null,
+            userId: user.id,
+          })
+          .returning();
 
-app.put("/todos/:id", requireAuth, async (c) => {
-  try {
-    const user = c.get("user");
-    const todoId = parseInt(c.req.param("id"));
-    const body = await c.req.json();
-
-    if (isNaN(todoId)) {
-      return c.json({ error: "Invalid todo ID" }, 400);
+        return c.json(newTodo[0]);
+      } catch (error) {
+        return c.json({ error: "Failed to create todo" }, 500);
+      }
     }
+  )
 
-    const updatedTodo = await db
-      .update(todos)
-      .set({
-        title: body.title?.trim(),
-        description: body.description,
-        completed: body.completed,
-        updatedAt: new Date(),
-      })
-      .where(and(eq(todos.id, todoId), eq(todos.userId, user.id)))
-      .returning();
+  .put(
+    "/todos/:id",
+    requireAuth,
+    zValidator("param", todoParamSchema),
+    zValidator("json", todoUpdateSchema),
+    async (c) => {
+      try {
+        const user = c.get("user");
+        const { id } = c.req.valid("param");
+        const updateData = c.req.valid("json");
 
-    if (updatedTodo.length === 0) {
-      return c.json({ error: "Todo not found" }, 404);
+        const updatedTodo = await db
+          .update(todos)
+          .set({
+            ...updateData,
+            updatedAt: new Date(),
+          })
+          .where(and(eq(todos.id, id), eq(todos.userId, user.id)))
+          .returning();
+
+        if (updatedTodo.length === 0) {
+          return c.json({ error: "Todo not found" }, 404);
+        }
+
+        return c.json(updatedTodo[0]);
+      } catch (error) {
+        return c.json({ error: "Failed to update todo" }, 500);
+      }
     }
+  )
 
-    return c.json(updatedTodo[0]);
-  } catch (error) {
-    return c.json({ error: "Failed to update todo" }, 500);
-  }
-});
+  .delete(
+    "/todos/:id",
+    requireAuth,
+    zValidator("param", todoParamSchema),
+    async (c) => {
+      try {
+        const user = c.get("user");
+        const { id } = c.req.valid("param");
 
-app.delete("/todos/:id", requireAuth, async (c) => {
-  try {
-    const user = c.get("user");
-    const todoId = parseInt(c.req.param("id"));
+        const deletedTodo = await db
+          .delete(todos)
+          .where(and(eq(todos.id, id), eq(todos.userId, user.id)))
+          .returning();
 
-    if (isNaN(todoId)) {
-      return c.json({ error: "Invalid todo ID" }, 400);
+        if (deletedTodo.length === 0) {
+          return c.json({ error: "Todo not found" }, 404);
+        }
+
+        return c.json({ message: "Todo deleted successfully" });
+      } catch (error) {
+        return c.json({ error: "Failed to delete todo" }, 500);
+      }
     }
+  )
 
-    const deletedTodo = await db
-      .delete(todos)
-      .where(and(eq(todos.id, todoId), eq(todos.userId, user.id)))
-      .returning();
+  // Categories API（Zod validation付き）
+  .get("/categories", requireAuth, async (c) => {
+    try {
+      const user = c.get("user");
+      const userCategories = await db
+        .select()
+        .from(categories)
+        .where(eq(categories.userId, user.id))
+        .orderBy(categories.createdAt);
 
-    if (deletedTodo.length === 0) {
-      return c.json({ error: "Todo not found" }, 404);
+      return c.json(userCategories);
+    } catch (error) {
+      return c.json({ error: "Failed to fetch categories" }, 500);
     }
+  })
 
-    return c.json({ message: "Todo deleted successfully" });
-  } catch (error) {
-    return c.json({ error: "Failed to delete todo" }, 500);
-  }
-});
+  .post(
+    "/categories",
+    requireAuth,
+    zValidator("json", categoryCreateSchema),
+    async (c) => {
+      try {
+        const user = c.get("user");
+        const { name, color } = c.req.valid("json");
 
-// Categories API
-app.get("/categories", requireAuth, async (c) => {
-  try {
-    const user = c.get("user");
-    const userCategories = await db
-      .select()
-      .from(categories)
-      .where(eq(categories.userId, user.id))
-      .orderBy(categories.createdAt);
+        const newCategory = await db
+          .insert(categories)
+          .values({
+            name,
+            color,
+            userId: user.id,
+          })
+          .returning();
 
-    return c.json(userCategories);
-  } catch (error) {
-    return c.json({ error: "Failed to fetch categories" }, 500);
-  }
-});
-
-app.post("/categories", requireAuth, async (c) => {
-  try {
-    const user = c.get("user");
-    const body = await c.req.json();
-
-    if (!body.name || body.name.trim() === "") {
-      return c.json({ error: "Category name is required" }, 400);
+        return c.json(newCategory[0]);
+      } catch (error) {
+        return c.json({ error: "Failed to create category" }, 500);
+      }
     }
+  );
 
-    const newCategory = await db
-      .insert(categories)
-      .values({
-        name: body.name.trim(),
-        color: body.color || "#3b82f6",
-        userId: user.id,
-      })
-      .returning();
+// Hono RPC用の型エクスポート（チェーン形式）
+export type AppType = typeof routes;
 
-    return c.json(newCategory[0]);
-  } catch (error) {
-    return c.json({ error: "Failed to create category" }, 500);
-  }
-});
-
-// Hono RPC用の型エクスポート
-export type AppType = typeof app;
-
-export const GET = handle(app);
-export const POST = handle(app);
-export const PUT = handle(app);
-export const DELETE = handle(app);
+export const GET = handle(routes);
+export const POST = handle(routes);
+export const PUT = handle(routes);
+export const DELETE = handle(routes);
