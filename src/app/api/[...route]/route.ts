@@ -1,13 +1,24 @@
 import { auth } from "@/lib/auth";
 import { categories, db, todos } from "@/lib/db";
 import { and, eq } from "drizzle-orm";
-import { Hono } from "hono";
+import { Context, Hono } from "hono";
 import { cors } from "hono/cors";
 import { handle } from "hono/vercel";
 
 export const runtime = "nodejs";
 
-const app = new Hono().basePath("/api");
+// Hono型定義
+type Env = {
+  Variables: {
+    user: {
+      id: string;
+      name: string;
+      email: string;
+    };
+  };
+};
+
+const app = new Hono<Env>().basePath("/api");
 
 // CORS設定
 app.use(
@@ -22,7 +33,7 @@ app.use(
 app.mount("/auth", auth.handler);
 
 // 認証ミドルウェア
-const requireAuth = async (c: any, next: any) => {
+const requireAuth = async (c: Context, next: () => Promise<void>) => {
   try {
     const session = await auth.api.getSession({
       headers: c.req.raw.headers,
@@ -49,7 +60,7 @@ app.get("/hello", (c) => {
 // ToDo API Routes
 app.get("/todos", requireAuth, async (c) => {
   try {
-    const user = (c as any).get("user");
+    const user = c.get("user");
     const userTodos = await db
       .select()
       .from(todos)
@@ -64,7 +75,7 @@ app.get("/todos", requireAuth, async (c) => {
 
 app.post("/todos", requireAuth, async (c) => {
   try {
-    const user = (c as any).get("user");
+    const user = c.get("user");
     const body = await c.req.json();
 
     if (!body.title || body.title.trim() === "") {
@@ -88,7 +99,7 @@ app.post("/todos", requireAuth, async (c) => {
 
 app.put("/todos/:id", requireAuth, async (c) => {
   try {
-    const user = (c as any).get("user");
+    const user = c.get("user");
     const todoId = parseInt(c.req.param("id"));
     const body = await c.req.json();
 
@@ -119,7 +130,7 @@ app.put("/todos/:id", requireAuth, async (c) => {
 
 app.delete("/todos/:id", requireAuth, async (c) => {
   try {
-    const user = (c as any).get("user");
+    const user = c.get("user");
     const todoId = parseInt(c.req.param("id"));
 
     if (isNaN(todoId)) {
@@ -144,7 +155,7 @@ app.delete("/todos/:id", requireAuth, async (c) => {
 // Categories API
 app.get("/categories", requireAuth, async (c) => {
   try {
-    const user = (c as any).get("user");
+    const user = c.get("user");
     const userCategories = await db
       .select()
       .from(categories)
@@ -159,7 +170,7 @@ app.get("/categories", requireAuth, async (c) => {
 
 app.post("/categories", requireAuth, async (c) => {
   try {
-    const user = (c as any).get("user");
+    const user = c.get("user");
     const body = await c.req.json();
 
     if (!body.name || body.name.trim() === "") {
@@ -180,6 +191,9 @@ app.post("/categories", requireAuth, async (c) => {
     return c.json({ error: "Failed to create category" }, 500);
   }
 });
+
+// Hono RPC用の型エクスポート
+export type AppType = typeof app;
 
 export const GET = handle(app);
 export const POST = handle(app);
