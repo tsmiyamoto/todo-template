@@ -4,18 +4,21 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { client, type Todo } from '@/lib/api-client'
+import { client } from '@/lib/api-client'
 import { signOut, useSession } from '@/lib/auth-client'
+import type { InferResponseType } from 'hono/client'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
+import useSWR, { mutate } from 'swr'
+
+// Hono RPCの型推論を使用（成功時の型のみ）
+type TodosResponse = InferResponseType<typeof client.api.todos.$get, 200>
 
 export default function DashboardPage() {
   const session = useSession()
   const router = useRouter()
-  const [todos, setTodos] = useState<Todo[]>()
   const [newTodoTitle, setNewTodoTitle] = useState('')
   const [newTodoDescription, setNewTodoDescription] = useState('')
-  const [loading, setLoading] = useState(false)
 
   // 認証チェック（middlewareでも行うが念のため）
   useEffect(() => {
@@ -24,92 +27,125 @@ export default function DashboardPage() {
     }
   }, [session, router])
 
-  // ToDoリストを取得（Hono RPC）
-  const fetchTodos = async () => {
-    try {
-      const res = await client.api.todos.$get()
-      if (res.ok) {
-        const data = await res.json()
-        setTodos(data)
-      } else {
-        console.error('ToDoの取得に失敗しました')
-        setTodos([])
-      }
-    } catch (error) {
-      console.error('ToDoの取得に失敗しました:', error)
-      setTodos([])
-    }
+  // ToDoリスト取得（SWR）
+  const todosKey = session.data ? ['todos'] : null
+  const todosFetcher = async () => {
+    const res = await client.api.todos.$get()
+    if (!res.ok) throw new Error('ToDoの取得に失敗しました')
+    return res.json()
   }
 
-  // 初回読み込み
-  useEffect(() => {
-    if (session.data) {
-      fetchTodos()
-    }
-  }, [session.data])
+  const {
+    data: todos = [],
+    error: todosError,
+    isLoading: todosLoading,
+  } = useSWR<TodosResponse>(todosKey, todosFetcher)
 
-  // 新しいToDoを追加（Hono RPC + Zod validation）
+  // ToDo追加（Optimistic Updates）
   const addTodo = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTodoTitle.trim()) return
 
-    setLoading(true)
+    const newTodo = {
+      id: Date.now(), // 一時的なID
+      title: newTodoTitle,
+      description: newTodoDescription || null,
+      completed: false,
+      userId: session.data?.user.id || '',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+
     try {
+      // 楽観的更新：即座にUIに反映
+      mutate(
+        ['todos'],
+        (currentTodos: TodosResponse = []) => [newTodo, ...currentTodos],
+        false
+      )
+
+      // サーバーに送信
       const res = await client.api.todos.$post({
         json: {
           title: newTodoTitle,
           description: newTodoDescription || undefined,
         }
       })
-      
-      if (res.ok) {
-        setNewTodoTitle('')
-        setNewTodoDescription('')
-        fetchTodos() // リスト更新
-      } else {
-        const errorData = await res.json()
-        console.error('ToDoの追加に失敗しました:', errorData)
+
+      if (!res.ok) {
+        throw new Error('ToDoの追加に失敗しました')
       }
+
+      // 成功時：フォームクリア & データ再取得
+      setNewTodoTitle('')
+      setNewTodoDescription('')
+      mutate(['todos'])
     } catch (error) {
+      // エラー時：元のデータに戻す
+      mutate(['todos'])
       console.error('ToDoの追加に失敗しました:', error)
-    } finally {
-      setLoading(false)
     }
   }
 
-  // ToDoの完了状態を切り替え（Hono RPC）
+  // 完了状態切り替え（Optimistic Updates）
   const toggleTodo = async (id: number, completed: boolean) => {
     try {
+      // 楽観的更新：即座にUIに反映
+      mutate(
+        ['todos'],
+        (currentTodos: TodosResponse = []) =>
+          currentTodos.map(todo => 
+            todo.id === id 
+              ? { ...todo, completed, updatedAt: new Date().toISOString() }
+              : todo
+          ),
+        false
+      )
+
+      // サーバーに送信
       const res = await client.api.todos[':id'].$put({
         param: { id: id.toString() },
         json: { completed }
       })
-      
-      if (res.ok) {
-        fetchTodos() // リスト更新
-      } else {
-        const errorData = await res.json()
-        console.error('ToDoの更新に失敗しました:', errorData)
+
+      if (!res.ok) {
+        throw new Error('ToDoの更新に失敗しました')
       }
+
+      // 成功時：データ再取得
+      mutate(['todos'])
     } catch (error) {
+      // エラー時：元のデータに戻す
+      mutate(['todos'])
       console.error('ToDoの更新に失敗しました:', error)
     }
   }
 
-  // ToDoを削除（Hono RPC）
+  // 削除（Optimistic Updates）
   const deleteTodo = async (id: number) => {
     try {
+      // 楽観的更新：即座にUIから削除
+      mutate(
+        ['todos'],
+        (currentTodos: TodosResponse = []) =>
+          currentTodos.filter(todo => todo.id !== id),
+        false
+      )
+
+      // サーバーに送信
       const res = await client.api.todos[':id'].$delete({
         param: { id: id.toString() }
       })
-      
-      if (res.ok) {
-        fetchTodos() // リスト更新
-      } else {
-        const errorData = await res.json()
-        console.error('ToDoの削除に失敗しました:', errorData)
+
+      if (!res.ok) {
+        throw new Error('ToDoの削除に失敗しました')
       }
+
+      // 成功時：データ再取得
+      mutate(['todos'])
     } catch (error) {
+      // エラー時：元のデータに戻す
+      mutate(['todos'])
       console.error('ToDoの削除に失敗しました:', error)
     }
   }
@@ -174,8 +210,8 @@ export default function DashboardPage() {
                 value={newTodoDescription}
                 onChange={(e) => setNewTodoDescription(e.target.value)}
               />
-              <Button type="submit" disabled={loading}>
-                {loading ? '追加中...' : 'タスクを追加'}
+              <Button type="submit">
+                タスクを追加
               </Button>
             </form>
           </CardContent>
@@ -184,13 +220,19 @@ export default function DashboardPage() {
         {/* ToDoリスト */}
         <div className="space-y-4">
           <h2 className="text-xl font-semibold text-gray-900">
-            あなたのタスク {todos ? `(${todos.length})` : ''}
+            あなたのタスク ({todos.length})
           </h2>
-          
-          {todos === undefined ? (
+
+          {todosLoading ? (
             <Card>
               <CardContent className="py-8 text-center text-gray-500">
                 読み込み中...
+              </CardContent>
+            </Card>
+          ) : todosError ? (
+            <Card>
+              <CardContent className="py-8 text-center text-red-500">
+                エラーが発生しました: {todosError.message}
               </CardContent>
             </Card>
           ) : todos.length === 0 ? (
@@ -207,7 +249,7 @@ export default function DashboardPage() {
                     <div className="flex items-start gap-3">
                       <Checkbox
                         checked={todo.completed}
-                        onCheckedChange={(checked) => 
+                        onCheckedChange={(checked) =>
                           toggleTodo(todo.id, checked as boolean)
                         }
                         className="mt-1"
