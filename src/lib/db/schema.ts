@@ -1,4 +1,11 @@
-import { boolean, pgTable, serial, text, timestamp } from "drizzle-orm/pg-core";
+import {
+  boolean,
+  integer,
+  pgTable,
+  serial,
+  text,
+  timestamp,
+} from "drizzle-orm/pg-core";
 
 // Better Auth公式スキーマ
 export const user = pgTable("user", {
@@ -84,6 +91,23 @@ export const categories = pgTable("categories", {
   createdAt: timestamp("created_at")
     .$defaultFn(() => new Date())
     .notNull(),
+  updatedAt: timestamp("updated_at")
+    .$defaultFn(() => new Date())
+    .notNull(),
+});
+
+// ToDoとカテゴリの多対多関係（中間テーブル）
+export const todoCategories = pgTable("todo_categories", {
+  id: serial("id").primaryKey(),
+  todoId: integer("todo_id")
+    .notNull()
+    .references(() => todos.id, { onDelete: "cascade" }),
+  categoryId: integer("category_id")
+    .notNull()
+    .references(() => categories.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at")
+    .$defaultFn(() => new Date())
+    .notNull(),
 });
 
 // Type exports
@@ -94,3 +118,5 @@ export type Todo = typeof todos.$inferSelect;
 export type NewTodo = typeof todos.$inferInsert;
 export type Category = typeof categories.$inferSelect;
 export type NewCategory = typeof categories.$inferInsert;
+export type TodoCategory = typeof todoCategories.$inferSelect;
+export type NewTodoCategory = typeof todoCategories.$inferInsert;
