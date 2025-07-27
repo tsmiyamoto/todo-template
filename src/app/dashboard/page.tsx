@@ -1,24 +1,23 @@
 'use client'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { CategorySelector } from '@/components/ui/category-selector'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
-import { client } from '@/lib/api-client'
+import { client, type CategoriesResponse, type TodosResponse, type TodoWithCategories } from '@/lib/api-client'
 import { signOut, useSession } from '@/lib/auth-client'
-import type { InferResponseType } from 'hono/client'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import useSWR, { mutate } from 'swr'
-
-// Hono RPCの型推論を使用（成功時の型のみ）
-type TodosResponse = InferResponseType<typeof client.api.todos.$get, 200>
 
 export default function DashboardPage() {
   const session = useSession()
   const router = useRouter()
   const [newTodoTitle, setNewTodoTitle] = useState('')
   const [newTodoDescription, setNewTodoDescription] = useState('')
+  const [selectedCategories, setSelectedCategories] = useState<number[]>([])
 
   // 認証チェック（middlewareでも行うが念のため）
   useEffect(() => {
@@ -41,12 +40,71 @@ export default function DashboardPage() {
     isLoading: todosLoading,
   } = useSWR<TodosResponse>(todosKey, todosFetcher)
 
+  // カテゴリリスト取得（SWR）
+  const categoriesKey = session.data ? ['categories'] : null
+  const categoriesFetcher = async () => {
+    const res = await client.api.categories.$get()
+    if (!res.ok) throw new Error('カテゴリの取得に失敗しました')
+    return res.json()
+  }
+
+  const {
+    data: categories = [],
+    error: categoriesError,
+    isLoading: categoriesLoading,
+  } = useSWR<CategoriesResponse>(categoriesKey, categoriesFetcher)
+
+  // カテゴリ作成（CategorySelectorから呼び出される）
+  const createCategory = async (name: string, color: string): Promise<void> => {
+    const res = await client.api.categories.$post({
+      json: { name, color }
+    })
+
+    if (!res.ok) {
+      throw new Error('カテゴリの作成に失敗しました')
+    }
+
+    // データ再取得
+    mutate(['categories'])
+  }
+
+  // カテゴリ更新（CategorySelectorから呼び出される）
+  const updateCategory = async (id: number, name: string, color: string): Promise<void> => {
+    const res = await client.api.categories[':id'].$put({
+      param: { id: id.toString() },
+      json: { name, color }
+    })
+
+    if (!res.ok) {
+      throw new Error('カテゴリの更新に失敗しました')
+    }
+
+    // データ再取得
+    mutate(['categories'])
+    mutate(['todos']) // ToDoのカテゴリ表示も更新
+  }
+
+  // カテゴリ削除（CategorySelectorから呼び出される）
+  const deleteCategory = async (id: number): Promise<void> => {
+    const res = await client.api.categories[':id'].$delete({
+      param: { id: id.toString() }
+    })
+
+    if (!res.ok) {
+      throw new Error('カテゴリの削除に失敗しました')
+    }
+
+    // データ再取得
+    mutate(['categories'])
+    mutate(['todos']) // ToDoのカテゴリ表示も更新
+  }
+
   // ToDo追加（Optimistic Updates）
   const addTodo = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!newTodoTitle.trim()) return
 
-    const newTodo = {
+    const newTodo: TodoWithCategories = {
       id: Date.now(), // 一時的なID
       title: newTodoTitle,
       description: newTodoDescription || null,
@@ -54,6 +112,10 @@ export default function DashboardPage() {
       userId: session.data?.user.id || '',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      categories: selectedCategories.map(id => {
+        const cat = categories.find(c => c.id === id)
+        return cat ? { id: cat.id, name: cat.name, color: cat.color } : { id, name: '不明', color: '#gray' }
+      }),
     }
 
     try {
@@ -69,6 +131,7 @@ export default function DashboardPage() {
         json: {
           title: newTodoTitle,
           description: newTodoDescription || undefined,
+          categoryIds: selectedCategories.length > 0 ? selectedCategories : undefined,
         }
       })
 
@@ -79,6 +142,7 @@ export default function DashboardPage() {
       // 成功時：フォームクリア & データ再取得
       setNewTodoTitle('')
       setNewTodoDescription('')
+      setSelectedCategories([])
       mutate(['todos'])
     } catch (error) {
       // エラー時：元のデータに戻す
@@ -188,9 +252,9 @@ export default function DashboardPage() {
       </header>
 
       {/* メインコンテンツ */}
-      <main className="max-w-4xl mx-auto px-4 py-8">
+      <main className="max-w-4xl mx-auto px-4 py-8 space-y-8">
         {/* 新しいToDo追加フォーム */}
-        <Card className="mb-8">
+        <Card>
           <CardHeader>
             <CardTitle>新しいタスクを追加</CardTitle>
             <CardDescription>
@@ -210,6 +274,18 @@ export default function DashboardPage() {
                 value={newTodoDescription}
                 onChange={(e) => setNewTodoDescription(e.target.value)}
               />
+              
+              {/* Notionスタイルのカテゴリ選択 */}
+              <CategorySelector
+                categories={categories}
+                selectedCategories={selectedCategories}
+                onCategoriesChange={setSelectedCategories}
+                onCreateCategory={createCategory}
+                onUpdateCategory={updateCategory}
+                onDeleteCategory={deleteCategory}
+                placeholder="カテゴリを選択または作成..."
+              />
+
               <Button type="submit">
                 タスクを追加
               </Button>
@@ -265,6 +341,22 @@ export default function DashboardPage() {
                             {todo.description}
                           </p>
                         )}
+                        
+                        {/* カテゴリバッジ */}
+                        {todo.categories && todo.categories.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-2">
+                            {todo.categories.map((category: { id: number; name: string; color: string }) => (
+                              <Badge 
+                                key={category.id} 
+                                variant="secondary"
+                                style={{ backgroundColor: category.color + '20', color: category.color }}
+                              >
+                                {category.name}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+                        
                         <p className="text-xs text-gray-400 mt-2">
                           {new Date(todo.createdAt).toLocaleDateString('ja-JP')}
                         </p>
