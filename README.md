@@ -40,11 +40,23 @@ NEXT_PUBLIC_BETTER_AUTH_URL="http://localhost:3000"
 
 ### 2. Database Setup
 
+Start Supabase locally:
+
+```bash
+supabase start
+```
+
 Generate and run migrations:
 
 ```bash
 npm run db:generate
 npm run db:migrate
+```
+
+To stop the local Supabase instance when done:
+
+```bash
+supabase stop
 ```
 
 ### 3. Start Development Server
