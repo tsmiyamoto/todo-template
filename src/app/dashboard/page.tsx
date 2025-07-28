@@ -8,9 +8,23 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { client, type CategoriesResponse, type TodosResponse, type TodoWithCategories } from '@/lib/api-client'
 import { signOut, useSession } from '@/lib/auth-client'
+import { ChevronDown, ChevronRight, Grid3X3, List } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
 import useSWR, { mutate } from 'swr'
+
+// 表示モードの型定義
+type ViewMode = 'all' | 'category'
+
+// カテゴリ別グルーピング用の型
+interface GroupedTodos {
+  categoryId: number | null
+  categoryName: string
+  categoryColor: string
+  todos: TodoWithCategories[]
+  completedCount: number
+  totalCount: number
+}
 
 export default function DashboardPage() {
   const session = useSession()
@@ -18,6 +32,8 @@ export default function DashboardPage() {
   const [newTodoTitle, setNewTodoTitle] = useState('')
   const [newTodoDescription, setNewTodoDescription] = useState('')
   const [selectedCategories, setSelectedCategories] = useState<number[]>([])
+  const [viewMode, setViewMode] = useState<ViewMode>('all')
+  const [collapsedCategories, setCollapsedCategories] = useState<Set<number | null>>(new Set())
 
   // 認証チェック（middlewareでも行うが念のため）
   useEffect(() => {
@@ -53,6 +69,78 @@ export default function DashboardPage() {
     error: categoriesError,
     isLoading: categoriesLoading,
   } = useSWR<CategoriesResponse>(categoriesKey, categoriesFetcher)
+
+  // カテゴリ別グルーピング関数
+  const groupTodosByCategory = (): GroupedTodos[] => {
+    const groups: { [key: string]: GroupedTodos } = {}
+
+    // 既存のカテゴリでグループを初期化
+    categories.forEach(category => {
+      groups[`cat_${category.id}`] = {
+        categoryId: category.id,
+        categoryName: category.name,
+        categoryColor: category.color,
+        todos: [],
+        completedCount: 0,
+        totalCount: 0
+      }
+    })
+
+    // 未分類グループを初期化
+    groups['uncategorized'] = {
+      categoryId: null,
+      categoryName: '未分類',
+      categoryColor: '#6b7280',
+      todos: [],
+      completedCount: 0,
+      totalCount: 0
+    }
+
+    // Todoをカテゴリ別に分類
+    todos.forEach(todo => {
+      if (todo.categories && todo.categories.length > 0) {
+        // カテゴリがある場合は、各カテゴリに追加
+        todo.categories.forEach(category => {
+          const key = `cat_${category.id}`
+          if (groups[key]) {
+            groups[key].todos.push(todo)
+            groups[key].totalCount++
+            if (todo.completed) {
+              groups[key].completedCount++
+            }
+          }
+        })
+      } else {
+        // カテゴリがない場合は未分類に追加
+        groups['uncategorized'].todos.push(todo)
+        groups['uncategorized'].totalCount++
+        if (todo.completed) {
+          groups['uncategorized'].completedCount++
+        }
+      }
+    })
+
+    // Todoがあるグループのみを返す（ただし未分類は除く）
+    return Object.values(groups).filter(group => 
+      group.todos.length > 0 || group.categoryId === null
+    ).sort((a, b) => {
+      // 未分類を最後に配置
+      if (a.categoryId === null) return 1
+      if (b.categoryId === null) return -1
+      return a.categoryName.localeCompare(b.categoryName)
+    })
+  }
+
+  // カテゴリの折りたたみ切り替え
+  const toggleCategoryCollapse = (categoryId: number | null) => {
+    const newCollapsed = new Set(collapsedCategories)
+    if (newCollapsed.has(categoryId)) {
+      newCollapsed.delete(categoryId)
+    } else {
+      newCollapsed.add(categoryId)
+    }
+    setCollapsedCategories(newCollapsed)
+  }
 
   // カテゴリ作成（CategorySelectorから呼び出される）
   const createCategory = async (name: string, color: string): Promise<void> => {
@@ -220,6 +308,109 @@ export default function DashboardPage() {
     router.push('/')
   }
 
+  // TodoItemコンポーネント
+  const TodoItem = ({ todo }: { todo: TodoWithCategories }) => (
+    <Card key={todo.id} className={todo.completed ? 'opacity-75' : ''}>
+      <CardContent className="py-4">
+        <div className="flex items-start gap-3">
+          <Checkbox
+            checked={todo.completed}
+            onCheckedChange={(checked) =>
+              toggleTodo(todo.id, checked as boolean)
+            }
+            className="mt-1"
+          />
+          <div className="flex-1">
+            <h3 className={`font-medium ${
+              todo.completed ? 'line-through text-gray-500' : 'text-gray-900'
+            }`}>
+              {todo.title}
+            </h3>
+            {todo.description && (
+              <p className="text-sm text-gray-600 mt-1">
+                {todo.description}
+              </p>
+            )}
+            
+            {/* カテゴリバッジ（すべて表示モードの時のみ） */}
+            {viewMode === 'all' && todo.categories && todo.categories.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {todo.categories.map((category: { id: number; name: string; color: string }) => (
+                  <Badge 
+                    key={category.id} 
+                    variant="secondary"
+                    style={{ backgroundColor: category.color + '20', color: category.color }}
+                  >
+                    {category.name}
+                  </Badge>
+                ))}
+              </div>
+            )}
+            
+            <p className="text-xs text-gray-400 mt-2">
+              {new Date(todo.createdAt).toLocaleDateString('ja-JP')}
+            </p>
+          </div>
+          <Button
+            variant="destructive"
+            size="sm"
+            onClick={() => deleteTodo(todo.id)}
+          >
+            削除
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+
+  // CategorySectionコンポーネント
+  const CategorySection = ({ group }: { group: GroupedTodos }) => {
+    const isCollapsed = collapsedCategories.has(group.categoryId)
+    
+    return (
+      <div className="space-y-3">
+        <div 
+          className="flex items-center gap-3 cursor-pointer select-none"
+          onClick={() => toggleCategoryCollapse(group.categoryId)}
+        >
+          <div className="flex items-center gap-2 flex-1">
+            {isCollapsed ? (
+              <ChevronRight className="h-4 w-4 text-gray-500" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-gray-500" />
+            )}
+            <div 
+              className="w-3 h-3 rounded-full"
+              style={{ backgroundColor: group.categoryColor }}
+            />
+            <h3 className="text-lg font-semibold text-gray-900">
+              {group.categoryName}
+            </h3>
+            <Badge variant="outline" className="text-xs">
+              {group.completedCount}/{group.totalCount}
+            </Badge>
+          </div>
+        </div>
+        
+        {!isCollapsed && (
+          <div className="ml-6 space-y-3">
+            {group.todos.length === 0 ? (
+              <Card>
+                <CardContent className="py-4 text-center text-gray-500 text-sm">
+                  このカテゴリにはまだタスクがありません
+                </CardContent>
+              </Card>
+            ) : (
+              group.todos.map((todo) => (
+                <TodoItem key={todo.id} todo={todo} />
+              ))
+            )}
+          </div>
+        )}
+      </div>
+    )
+  }
+
   if (session.isPending) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -231,6 +422,8 @@ export default function DashboardPage() {
   if (!session.data) {
     return null
   }
+
+  const groupedTodos = groupTodosByCategory()
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -293,11 +486,35 @@ export default function DashboardPage() {
           </CardContent>
         </Card>
 
-        {/* ToDoリスト */}
+        {/* 表示モード切り替えとToDoリスト */}
         <div className="space-y-4">
-          <h2 className="text-xl font-semibold text-gray-900">
-            あなたのタスク ({todos.length})
-          </h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-gray-900">
+              あなたのタスク ({todos.length})
+            </h2>
+            
+            {/* 表示モード切り替えボタン */}
+            <div className="flex gap-2">
+              <Button
+                variant={viewMode === 'all' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setViewMode('all')}
+                className="flex items-center gap-2"
+              >
+                <List className="h-4 w-4" />
+                すべて表示
+              </Button>
+              <Button
+                variant={viewMode === 'category' ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setViewMode('category')}
+                className="flex items-center gap-2"
+              >
+                <Grid3X3 className="h-4 w-4" />
+                カテゴリ別
+              </Button>
+            </div>
+          </div>
 
           {todosLoading ? (
             <Card>
@@ -317,60 +534,18 @@ export default function DashboardPage() {
                 まだタスクがありません。上のフォームから新しいタスクを追加してみましょう！
               </CardContent>
             </Card>
-          ) : (
+          ) : viewMode === 'all' ? (
+            // すべて表示モード（既存の実装）
             <div className="space-y-3">
               {todos.map((todo) => (
-                <Card key={todo.id} className={todo.completed ? 'opacity-75' : ''}>
-                  <CardContent className="py-4">
-                    <div className="flex items-start gap-3">
-                      <Checkbox
-                        checked={todo.completed}
-                        onCheckedChange={(checked) =>
-                          toggleTodo(todo.id, checked as boolean)
-                        }
-                        className="mt-1"
-                      />
-                      <div className="flex-1">
-                        <h3 className={`font-medium ${
-                          todo.completed ? 'line-through text-gray-500' : 'text-gray-900'
-                        }`}>
-                          {todo.title}
-                        </h3>
-                        {todo.description && (
-                          <p className="text-sm text-gray-600 mt-1">
-                            {todo.description}
-                          </p>
-                        )}
-                        
-                        {/* カテゴリバッジ */}
-                        {todo.categories && todo.categories.length > 0 && (
-                          <div className="flex flex-wrap gap-1 mt-2">
-                            {todo.categories.map((category: { id: number; name: string; color: string }) => (
-                              <Badge 
-                                key={category.id} 
-                                variant="secondary"
-                                style={{ backgroundColor: category.color + '20', color: category.color }}
-                              >
-                                {category.name}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-                        
-                        <p className="text-xs text-gray-400 mt-2">
-                          {new Date(todo.createdAt).toLocaleDateString('ja-JP')}
-                        </p>
-                      </div>
-                      <Button
-                        variant="destructive"
-                        size="sm"
-                        onClick={() => deleteTodo(todo.id)}
-                      >
-                        削除
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
+                <TodoItem key={todo.id} todo={todo} />
+              ))}
+            </div>
+          ) : (
+            // カテゴリ別表示モード
+            <div className="space-y-6">
+              {groupedTodos.map((group) => (
+                <CategorySection key={`${group.categoryId || 'uncategorized'}`} group={group} />
               ))}
             </div>
           )}
